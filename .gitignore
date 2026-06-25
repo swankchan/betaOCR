@@ -1,0 +1,7 @@
+models/
+output_json/
+output_pages/
+input_pdfs/
+.vscode
+__pycache__/
+.env
