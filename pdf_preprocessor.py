@@ -1,13 +1,13 @@
 # =====================================================================
 # 檔案名稱：pdf_preprocessor.py
-# 用途描述：PDF 智能預處理線路（純文字直出 / 掃描件自動轉 200 DPI 圖片）
+# 用途描述：PDF 智能預處理線路（純文字直出 / 掃描件自動轉圖片）
 # 
 # [Program Spec]
 # Input Parameters:
 #   - pdf_path (str): 實體 PDF 檔案的讀取路徑
 #   - output_image_dir (str, 預設為 None): 圖片輸出的資料夾。若為 None 則自動讀取環境變量
 #   - 依賴環境變量 (.env): 
-#       * PDF_DPI: 轉圖時的解析度 (預設 200)
+#       * PDF_DPI: 轉圖時的解析度 (預設 200) (配合 --image-min-tokens 1024 in llama.cpp)
 #       * OUTPUT_IMAGE_DIR: 預設圖片暫存目錄 (預設 "output_images")
 # Output Parameters:
 #   - results (dict): 鍵為頁碼(int)，值為包含類型、文字內容與圖片路徑的字典群

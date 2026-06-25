@@ -1,6 +1,6 @@
 # =====================================================================
 # 檔案名稱：app.py
-# 用途描述：智能月結單 OCR 前端主程式 - 支援全頁面流水自動循環合併與本地備份 (流派一完全體)
+# 用途描述：智能月結單 OCR 前端主程式 - 支援【Async 非同步全頁面並行提取】與本地備份 (流派一完全體)
 # 
 # [Program Spec]
 # Input Parameters:
@@ -10,21 +10,66 @@
 #   - nil (直接將結果渲染至網頁 UI，無程式傳回值)
 # =====================================================================
 import os
+import asyncio  # 🎯 新增：引進 Python 標準非同步庫
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
 from pdf_preprocessor import preprocess_pdf
-from ocr_engine import extract_data_with_llm
+# 🎯 變更：改為引入非同步版本的 LLM 提取函數
+from ocr_engine import extract_data_with_llm_async 
 from schemas import BankStatement
+
+# =====================================================================
+# 🎯 核心非同步調度引擎 (Parallel Orchestrator)
+# =====================================================================
+async def process_all_pages_async(pdf_summary: dict, progress_bar) -> dict:
+    """
+    非同步核心調度器：利用 asyncio 全頁面並發齊發，並保持 Streamlit 進度條動態刷新。
+    """
+    # 🛡️ 工業級防禦：設定最大併發數為 5，既能享受數倍飆速，又能防範衝破大模型 API 的 Rate Limit
+    sem = asyncio.Semaphore(1)
+    
+    async def extract_page_worker(page_idx, page_data):
+        async with sem:  # 透過信號量鎖定最大併發
+            start_time = time.time()  # ⏳ 開始計時
+            if page_data["type"] == "text":
+                res = await extract_data_with_llm_async(
+                    page_type="text", 
+                    text_content=page_data["content"]
+                )
+            else:
+                res = await extract_data_with_llm_async(
+                    page_type="image", 
+                    image_path=page_data["image_path"]
+                )
+            elapsed = time.time() - start_time  # ⏳ 計算耗時
+            print(f"⏱️ [Page {page_idx}] 提取完成，耗時 {elapsed:.2f} 秒 (類型: {page_data['type']})")
+        return page_idx, res
+
+    # 建立所有頁面的非同步協程任務群
+    tasks = [extract_page_worker(pidx, pdata) for pidx, pdata in pdf_summary.items()]
+    results_map = {}
+    total_pages = len(tasks)
+    
+    # 🎯 奇蹟時刻：使用 as_completed 哪一頁先好就先處理，完美驅動進度條
+    for idx, completed_task in enumerate(asyncio.as_completed(tasks)):
+        page_idx, page_result = await completed_task
+        results_map[page_idx] = page_result
+        # 即時刷新前端進度條
+        progress_bar.progress((idx + 1) / total_pages)
+        
+    return results_map
+
 
 def main():
     st.set_page_config(page_title="智能月結單 OCR 提取器", page_icon="📄", layout="wide")
     
     st.title("📄 智能月結單 OCR 數據提取器")
-    st.write("已成功將 **全頁面流水自動循環合併機制** 部署上線。")
+    st.write("已成功將 **Async 非同步高併發齊發與流派一防禦盾** 部署上線。")
     st.markdown("---")
     
     input_dir = os.getenv("INPUT_PDF_DIR", "input_pdfs")
@@ -67,52 +112,55 @@ def main():
     if target_pdf_path and st.button("🚀 開始進行多頁全自動數據提取", type="primary"):
         
         # 階段 1：調用預處理模組剖析所有頁面
-        with st.spinner("🔍 階段 1: 正在行本地預處理分流..."):
+        with st.spinner("🔍 階段 1: 正在進行本地預處理分流..."):
             pdf_summary = preprocess_pdf(target_pdf_path, output_image_dir=conf_output_dir)
         
-        # 階段 2：遍歷所有頁面，發動多輪提取並進行流水線合併
-        with st.spinner("🧠 階段 2: 核心 OCR 引擎正在逐頁提取並串聯流水帳..."):
+        # 階段 2：發動 Async 非同步任務齊發，進行多輪提取
+        with st.spinner("⚡ 階段 2: 核心 Async 引擎啟動！正在全頁面同時傳輸、高開高打提取中..."):
             try:
-                final_result = None
-                aggregated_transactions = []
-                
+                total_start_time = time.time()  # ⏳ 1. 記錄整份文件提取的起跑時間
+
                 # 建立 Streamlit 頁面進度條
                 progress_bar = st.progress(0)
                 total_pages = len(pdf_summary)
                 
-                for idx, page_idx in enumerate(sorted(pdf_summary.keys())):
-                    st.text(f"⏳ 正在分析第 {page_idx} / {total_pages} 頁...")
-                    page_data = pdf_summary[page_idx]
-                    
-                    # 呼叫大模型提取當前頁面
-                    if page_data["type"] == "text":
-                        page_result: BankStatement = extract_data_with_llm(
-                            page_type="text", 
-                            text_content=page_data["content"]
-                        )
-                    else:
-                        page_result: BankStatement = extract_data_with_llm(
-                            page_type="image", 
-                            image_path=page_data["image_path"]
-                        )
+                # 🎯 呼叫非同步事件循環 (Event Loop) 來執行調度引擎
+                results_map = asyncio.run(process_all_pages_async(pdf_summary, progress_bar))
+                
+                # ⏳ 2. 計算整份文件從齊發到全部收工的「真實總體耗時」
+                total_elapsed_time = time.time() - total_start_time
+                # 同步打印到後台 Console 方便你做運維壓測
+                print(f"\n==================================================")
+                print(f"🚀 [📊 壓測報告] 整份 PDF 處理完成！")
+                print(f"   - 總處理頁數: {total_pages} 頁")
+                print(f"   - 核心總體耗時 (Wall Time): {total_elapsed_time:.2f} 秒")
+                print(f"==================================================\n")
+
+                # 任務全部完成後，開始進行結構串聯與合體
+                final_result = None
+                aggregated_transactions = []
+                
+                # 依照正確頁碼順序進行主幹與流水線的合龍
+                for page_idx in sorted(results_map.keys()):
+                    page_result = results_map[page_idx]
                     
                     # 如果是第一頁，將其選定為主體架構（用作保留銀行和用戶基本資料）
                     if page_idx == 1:
                         final_result = page_result
                         
                     # 收集每一頁抽取出來的交易明細
-                    if page_result.transactions:
+                    if page_result and page_result.transactions:
                         aggregated_transactions.extend(page_result.transactions)
-                        
-                    # 更新進度條
-                    progress_bar.progress((idx + 1) / total_pages)
                 
                 # 核心合體：將所有頁面收集到的明細，強行灌回主結構中
                 if final_result:
                     final_result.transactions = aggregated_transactions
                 
                 # 階段 3：網頁 UI 渲染呈現
-                st.success(f"🎉 全自動結構化提取完成！成功合併處理共 {total_pages} 頁數據。")
+                st.success(
+                    f"🎉 全自動結構化提取完成！非同步併發成功處理共 {total_pages} 頁數據。\n\n"
+                    f"⏱️ **【系統效能指標】總體真實耗時：`{total_elapsed_time:.2f}` 秒** "
+                    f"(平均每頁耗時: `{total_elapsed_time/total_pages:.2f}` 秒)")
                 st.markdown("---")
                 
                 col1, col2 = st.columns([2, 1])
@@ -152,7 +200,7 @@ def main():
                     df.columns = ['交易日期', '結算日期', '商戶與交易詳情描述', '外幣金額', '外幣幣別', '金額 (HKD)']
                     
                     # 使用最新的寬度自適應語法呈現網頁表格
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df, width='stretch')
                 else:
                     st.warning("⚠️ 該文件未偵測到任何有效的交易流水明細。")
 
